@@ -5,21 +5,11 @@
 #include <AL/al.h>
 #include <AL/alc.h>
 #include <SDL/SDL.h>
-#include <SDL/SDL_gfxPrimitives.h>
 #include "chuck_fft.h"
-
-#ifdef WIN32
-#define USE_WINDOWS_USB
-#ifdef USE_WINDOWS_USB
-#include <sstream>
-#include <wchar.h>
-#include <string.h>
-#include <Windows.h>
-#include <hidsdi.h>
-#include <setupapi.h>
-#include <cfgmgr32.h>
-#endif // USE_WINDOWS_USB
-#endif
+#include  <sys/types.h>
+#include  <signal.h>
+#include  <sys/ipc.h>
+#include  <sys/shm.h>
 
 #define FALSE 0
 
@@ -31,17 +21,14 @@
 serial_port ports[2];
 fanbus bus1;
 
+typedef void sigfunc(int) sigfunc *signal(int, sigfunc*); 
+
 static int red_leds[] = { 0x10, 0x13, 0x16, 0x19 };
 static int grn_leds[] = { 0x11, 0x14, 0x17, 0x1A };
 static int blu_leds[] = { 0x12, 0x15, 0x18, 0x1B };
 #endif // ENABLE_FANBUS
 
-#ifdef USE_WINDOWS_USB
-HANDLE				dev;
-#else
-static struct usb_device *dev;
-struct usb_dev_handle *handle;
-#endif
+static struct usb_device *find_device(uint16_t vendor, uint16_t product);
 
 static int init_keyboard();
 
@@ -49,15 +36,28 @@ static void update_keyboard();
 
 static void set_led( int x, int y, int r, int g, int b );
 
-#ifdef USE_WINDOWS_USB
-HANDLE GetDeviceHandle(unsigned int uiVID, unsigned int uiPID, unsigned int uiMI);
-#else
-static struct usb_device *find_device(uint16_t vendor, uint16_t product);
-#endif
+void  SIGINT_handler(int);   
+void  SIGQUIT_handler(int); 
+
+
+static const int SPEED = 30;
+static const bool wasd_white = false;
+static const bool arrows_white = false;
+static const bool moba_lights = false;
+
+static const double red_min_bright = 0;
+static const double red_max_bright = 7;
+static const double green_min_bright = 0;
+static const double green_max_bright = 7;
+static const double blue_min_bright = 0;
+static const double blue_max_bright = 7;
+
+
 
 char red_val[144];
 char grn_val[144];
 char blu_val[144];
+char wasd [4][2] = { {12, 3}, { 10, 4}, { 12,4}, {15,4}}; 
 
 char data_pkt[5][64] = { 0 };
 
@@ -85,6 +85,9 @@ unsigned char led_matrix[7][92];
 
 unsigned char led_waveform[7][92];
 
+struct usb_device *dev;
+struct usb_dev_handle *handle;
+
 float normalizeFFT(float fftin)
 {
     if(fftin > 0)
@@ -97,8 +100,45 @@ float normalizeFFT(float fftin)
     }
 }
 
+void sig_handler(int signo)
+{
+  if (signo == SIGINT) exit(1);
+}
+void update(int signo)
+{
+  if (signo == SIGINT) exit(1);
+}
+static void fix_top_buttons(){
+    int led_1 = led_matrix[0][62];
+    int led_2 = led_matrix[0][81];
+    int led_3 = led_matrix[1][79];
+    int led_4 = led_matrix[1][81];
+
+    red_val[led_3] = red_val[led_matrix[1][57]];
+    grn_val[led_3] = grn_val[led_matrix[1][57]];
+    blu_val[led_3] = blu_val[led_matrix[1][57]];
+
+    red_val[led_4] = red_val[led_matrix[1][55]];
+    grn_val[led_4] = grn_val[led_matrix[1][55]];
+    blu_val[led_4] = blu_val[led_matrix[1][55]];
+
+    red_val[led_1] = red_val[led_matrix[1][47]];
+    grn_val[led_1] = grn_val[led_matrix[1][47]];
+    blu_val[led_1] = blu_val[led_matrix[1][47]];
+    
+    red_val[led_2] = red_val[led_matrix[1][51]];
+    grn_val[led_2] = grn_val[led_matrix[1][51]];
+    blu_val[led_2] = blu_val[led_matrix[1][51]];
+
+
+
+}
+
+
 int main(int argc, char *argv[])
 {
+    if (signal(SIGINT, sig_handler) == SIG_ERR)
+        printf("\ncan't catch SIGINT\n"); 
     float amplitude = 10.0f;
     unsigned char red, grn, blu;
     unsigned char buffer[256];
@@ -111,10 +151,10 @@ int main(int argc, char *argv[])
     SDL_Surface* screen = NULL;
     SDL_Event event;
 
-    SDL_Init( SDL_INIT_EVERYTHING );
-    screen = SDL_SetVideoMode( 256, 256, 32, SDL_HWSURFACE );
-    wavs = SDL_SetVideoMode( 256, 256, 32, SDL_HWSURFACE );
-    SDL_WM_SetCaption("FanBus Audio Visualizer", NULL);
+    //SDL_Init( SDL_INIT_EVERYTHING );
+    //screen = SDL_SetVideoMode( 256, 256, 32, SDL_HWSURFACE );
+    //wavs = SDL_SetVideoMode( 256, 256, 32, SDL_HWSURFACE );
+    //SDL_WM_SetCaption("FanBus Audio Visualizer", NULL);
 
     ALCdevice *device = alcCaptureOpenDevice(NULL, 8000, AL_FORMAT_MONO8, 256);
     alcCaptureStart(device);
@@ -142,7 +182,7 @@ int main(int argc, char *argv[])
             {
             for(int i = 0; i < 256; i++)
             {
-                buffer[i] = 0;
+         
                 charfft[i] = 0;
                 fft[i] = 0;
             }
@@ -157,7 +197,6 @@ int main(int argc, char *argv[])
 
             rfft(fft, 256, 1);
             apply_window(fft, win, 256);
-            boxRGBA(wavs, 0, 0, 255, 255, 0, 0, 0, 255);
 
             for(int i = 0; i < 256; i+=2)
             {
@@ -169,26 +208,12 @@ int main(int argc, char *argv[])
             fftavg /= 10;
             for(int i = 0; i < 256; i++)
             {
-                lineRGBA(wavs, i, 255, i, 255-charfft[i]*4, 0, 255, 0, 255);
-                pixelRGBA(wavs, i, 255- (unsigned char)buffer[i], 255, 0, 0, 255);
             }
-            lineRGBA(wavs, 247, 255, 247, 255-(unsigned char)fftavg, 255, 255, 255, 128);
-            lineRGBA(wavs, 248, 255, 248, 255-(unsigned char)fftavg, 255, 255, 255, 128);
-            lineRGBA(wavs, 249, 255, 249, 255-(unsigned char)fftavg, 255, 255, 255, 128);
-            lineRGBA(wavs, 250, 255, 250, 255-(unsigned char)fftavg, 255, 255, 255, 128);
-
-            lineRGBA(wavs, 251, 255, 251, 255-(unsigned char)level/5, 255, 255, 255, 128);
-            lineRGBA(wavs, 252, 255, 252, 255-(unsigned char)level/5, 255, 255, 255, 128);
-            lineRGBA(wavs, 253, 255, 253, 255-(unsigned char)level/5, 255, 255, 255, 128);
-            lineRGBA(wavs, 254, 255, 254, 255-(unsigned char)level/5, 255, 255, 255, 128);
-            SDL_BlitSurface(wavs, NULL, screen, NULL);
-            SDL_Flip(screen);
-            SDL_PollEvent(&event);
             if(event.type == SDL_QUIT)
             {
                 return 0;
             }
-            SDL_Delay(15);
+            SDL_Delay(20);
 
 #ifdef ENABLE_FANBUS
             for(int i = 0; i < 4; i++)
@@ -200,7 +225,7 @@ int main(int argc, char *argv[])
                 bus1.fanbus_write(red_leds[i], 0x02, red);
                 bus1.fanbus_write(grn_leds[i], 0x02, grn);
                 bus1.fanbus_write(blu_leds[i], 0x02, blu);
-
+                printf("fanbus");
                 bus1.fanbus_write(0x0C, 0x02, 0x01);
             }
 #endif
@@ -209,29 +234,60 @@ int main(int argc, char *argv[])
             {
                 for(int y = 0; y < 7; y++)
                 {
-                    red = 1.5f * ( sin( ( x / 92.0f ) * 2 * 3.14f ) + 1 );
-                    grn = 1.5f * ( sin( ( ( x / 92.0f ) * 2 * 3.14f ) - ( 6.28f / 3 ) ) + 1 );
-                    blu = 1.5f * ( sin( ( ( x / 92.0f ) * 2 * 3.14f ) + ( 6.28f / 3 ) ) + 1 );
-
+                    double red_multiplier = (red_max_bright - red_min_bright + 1)/3.0;
+                    double green_multiplier = (green_max_bright - green_min_bright + 1)/3.0;
+                    double blue_multiplier = (blue_max_bright - blue_min_bright + 1)/3.0;
+                    red =  (1.5f * ( sin( ( x / 92.0f ) * 2 * 3.14f ) + 1 ))* red_multiplier + red_min_bright;
+                    grn = (1.5f * ( sin( ( ( x / 92.0f ) * 2 * 3.14f ) - ( 6.28f / 3 ) ) + 1 ))* green_multiplier+ green_min_bright;
+                    blu = (1.5f * ( sin( ( ( x / 92.0f ) * 2 * 3.14f ) + ( 6.28f / 3 ) ) + 1 ))* blue_multiplier + blue_min_bright;
                     set_led( ( x + j ) % 92, y, red, grn, blu );
                 }
             }
-            for(int i = 0; i < 91; i++)
-            {
-                for(int k = 0; k < 7; k++)
+            if (wasd_white){
+                for (int i=0; i<4; i++){
+                    set_led( wasd[i][0], wasd[i][1], 0x07, 0x07, 0x07);
+                }
+            }
+            if (arrows_white){
+                for(int i = 60; i < 75; i++)
                 {
-                    if( charfft[(int)(i*2.1+1)] > (255/(15 + (i*0.8))) * (7-k) )
+                    for(int k = 5; k < 7; k++)
                     {
+                        //if( charfft[(int)(i*2.1+1)] > (255/(15 + (i*0.8))) * (7-k) )
                         set_led( i, k, 0x07, 0x07, 0x07);
                     }
                 }
             }
+            if (moba_lights){
+                for(int i = 6; i <26; i++)
+                {
+                    for(int k = 2; k < 3; k++)
+                    {
+                        set_led( i, k, 0x00, 0x07, 0x07);
+                    }
+                }
+                for(int i = 6; i <20; i++)
+                {
+                    for(int k = 3; k < 4; k++)
+                    {
+                        set_led( i, k, 0x07, 0x07, 0x07);
+                    }
+                }
+                for(int i = 20; i <21; i++)
+                {
+                    for(int k = 4; k < 5; k++)
+                    {
+                        set_led( i, k, 0x07, 0x00, 0x00);
+                    }
+                }
+            }
+            fix_top_buttons();
+            usleep(SPEED*1000);
             update_keyboard();
         }
     }
     return 0;
 }
-
 
 static void set_led( int x, int y, int r, int g, int b )
 {
@@ -262,21 +318,7 @@ static int init_keyboard()
 
     printf("Searching for Corsair K70 RGB keyboard...\n");
 
-#ifdef USE_WINDOWS_USB
-    dev = GetDeviceHandle(0x1B1C, 0x1B13, 0x3);
-#else
-    dev = find_device(0x1B1C, 0x1B13);
-#endif
-
-    if(dev == NULL)
-    {
-        printf("Searching for Corsair K95 RGB keyboard...\n");
-#ifdef USE_WINDOWS_USB
-        dev = GetDeviceHandle(0x1B1C, 0x1B11, 0x3);
-#else
-        dev = find_device(0x1B1C, 0x1B11);
-#endif
-    }
+    dev = find_device(0x1B1C, 0x1B17);
 
     if(dev == NULL)
     {
@@ -288,7 +330,6 @@ static int init_keyboard()
         printf("Corsair K70 RGB keyboard detected successfully :)\n");
     }
 
-#ifndef USE_WINDOWS_USB
     handle = usb_open(dev);
 
     if(handle == NULL)
@@ -301,11 +342,8 @@ static int init_keyboard()
         printf("USB device handle opened successfully :)\n");
     }
 
-#ifndef WIN32
-    status = usb_claim_interface(handle, 3);
-
-
     status = usb_detach_kernel_driver_np(handle, 3);
+    status = usb_claim_interface(handle, 3);
 
     if(status == 0)
     {
@@ -314,10 +352,8 @@ static int init_keyboard()
     else
     {
         printf("USB interface claim failed with error %d :(\n", status);
-        return 1;
+//        return 1;
     }
-#endif
-#endif
 
     // Construct XY lookup table
     unsigned char *keys = position_map;
@@ -358,17 +394,6 @@ static int init_keyboard()
     return 0;
 }
 
-#ifdef USE_WINDOWS_USB
-static void send_usb_msg(char * data_pkt)
-{
-    char usb_pkt[65];
-    for(int i = 1; i < 65; i++)
-    {
-        usb_pkt[i] = data_pkt[i-1];
-    }
-    HidD_SetFeature(dev, usb_pkt, 65);
-}
-#endif
 
 static void update_keyboard()
 {
@@ -396,10 +421,9 @@ static void update_keyboard()
     data_pkt[3][1] = 0x04;
     data_pkt[3][2] = 0x24;
 
-    data_pkt[4][0] = 0x07;
-    data_pkt[4][1] = 0x27;
-    data_pkt[4][4] = 0xD8;
-
+        data_pkt[4][0] = 0x07;
+        data_pkt[4][1] = 0x27;
+        data_pkt[4][4] = 0xD8;
     for(int i = 0; i < 60; i++)
     {
         data_pkt[0][i+4] = red_val[i*2+1] << 4 | red_val[i*2];
@@ -430,22 +454,14 @@ static void update_keyboard()
         data_pkt[3][i+4] = blu_val[i*2+73] << 4 | blu_val[i*2+72];
     }
 
-#ifdef USE_WINDOWS_USB
-    send_usb_msg(data_pkt[0]);
-    send_usb_msg(data_pkt[1]);
-    send_usb_msg(data_pkt[2]);
-    send_usb_msg(data_pkt[3]);
-    send_usb_msg(data_pkt[4]);
-#else
     usb_control_msg(handle, 0x21, 0x09, 0x0300, 0x03, data_pkt[0], 64, 1000);
     usb_control_msg(handle, 0x21, 0x09, 0x0300, 0x03, data_pkt[1], 64, 1000);
     usb_control_msg(handle, 0x21, 0x09, 0x0300, 0x03, data_pkt[2], 64, 1000);
     usb_control_msg(handle, 0x21, 0x09, 0x0300, 0x03, data_pkt[3], 64, 1000);
     usb_control_msg(handle, 0x21, 0x09, 0x0300, 0x03, data_pkt[4], 64, 1000);
-#endif
 }
 
-#ifndef USE_WINDOWS_USB
+
 static struct usb_device *find_device(uint16_t vendor, uint16_t product)
 {
     struct usb_bus *bus;
@@ -471,102 +487,3 @@ static struct usb_device *find_device(uint16_t vendor, uint16_t product)
 
     return NULL;
 }
-#endif
-
-#ifdef USE_WINDOWS_USB
-//==================================================================================================
-// Code by http://www.reddit.com/user/chrisgzy
-//==================================================================================================
-bool IsMatchingDevice(wchar_t *pDeviceID, unsigned int uiVID, unsigned int uiPID, unsigned int uiMI)
-{
-	unsigned int uiLocalVID = 0, uiLocalPID = 0, uiLocalMI = 0;
-
-	LPWSTR pszNextToken = 0;
-	LPWSTR pszToken = wcstok(pDeviceID, L"\\#&");
-	while (pszToken)
-	{
-		std::wstring tokenStr(pszToken);
-		if (tokenStr.find(L"VID_", 0, 4) != std::wstring::npos)
-		{
-			std::wistringstream iss(tokenStr.substr(4));
-			iss >> std::hex >> uiLocalVID;
-		}
-		else if (tokenStr.find(L"PID_", 0, 4) != std::wstring::npos)
-		{
-			std::wistringstream iss(tokenStr.substr(4));
-			iss >> std::hex >> uiLocalPID;
-		}
-		else if (tokenStr.find(L"MI_", 0, 3) != std::wstring::npos)
-		{
-			std::wistringstream iss(tokenStr.substr(3));
-			iss >> std::hex >> uiLocalMI;
-		}
-
-		pszToken = wcstok(0, L"\\#&");
-	}
-
-	if (uiVID != uiLocalVID || uiPID != uiLocalPID || uiMI != uiLocalMI)
-		return false;
-
-	return true;
-}
-
-
-//==================================================================================================
-// Code by http://www.reddit.com/user/chrisgzy
-//==================================================================================================
-HANDLE GetDeviceHandle(unsigned int uiVID, unsigned int uiPID, unsigned int uiMI)
-{
-	const GUID GUID_DEVINTERFACE_HID = { 0x4D1E55B2L, 0xF16F, 0x11CF, 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 };
-	HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVINTERFACE_HID, 0, 0, DIGCF_DEVICEINTERFACE | DIGCF_PRESENT);
-	if (hDevInfo == INVALID_HANDLE_VALUE)
-		return 0;
-
-	HANDLE hReturn = 0;
-
-	SP_DEVINFO_DATA deviceData = { 0 };
-	deviceData.cbSize = sizeof(SP_DEVINFO_DATA);
-
-	for (unsigned int i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &deviceData); ++i)
-	{
-		wchar_t wszDeviceID[MAX_DEVICE_ID_LEN];
-		if (CM_Get_Device_IDW(deviceData.DevInst, wszDeviceID, MAX_DEVICE_ID_LEN, 0))
-			continue;
-
-		if (!IsMatchingDevice(wszDeviceID, uiVID, uiPID, uiMI))
-			continue;
-
-		SP_INTERFACE_DEVICE_DATA interfaceData = { 0 };
-		interfaceData.cbSize = sizeof(SP_INTERFACE_DEVICE_DATA);
-
-		if (!SetupDiEnumDeviceInterfaces(hDevInfo, &deviceData, &GUID_DEVINTERFACE_HID, 0, &interfaceData))
-			break;
-
-		DWORD dwRequiredSize = 0;
-		SetupDiGetDeviceInterfaceDetail(hDevInfo, &interfaceData, 0, 0, &dwRequiredSize, 0);
-
-		SP_INTERFACE_DEVICE_DETAIL_DATA *pData = (SP_INTERFACE_DEVICE_DETAIL_DATA *)new unsigned char[dwRequiredSize];
-		pData->cbSize = sizeof(SP_INTERFACE_DEVICE_DETAIL_DATA);
-
-		if (!SetupDiGetDeviceInterfaceDetail(hDevInfo, &interfaceData, pData, dwRequiredSize, 0, 0))
-		{
-			delete pData;
-			break;
-		}
-
-		HANDLE hDevice = CreateFile(pData->DevicePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0);
-		if (hDevice == INVALID_HANDLE_VALUE)
-		{
-			delete pData;
-			break;
-		}
-
-		hReturn = hDevice;
-		break;
-	}
-
-	SetupDiDestroyDeviceInfoList(hDevInfo);
-
-	return hReturn;
-}
-#endif
