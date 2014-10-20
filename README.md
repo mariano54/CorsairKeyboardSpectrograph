@@ -1,7 +1,7 @@
 CorsairKeyboardSpectrograph
 ===========================
 
-Spectrograph audio visualizer for Corsair K70 RGB keyboard for Windows and Linux
+Spectrograph audio visualizer for Corsair K65 RGB keyboard for Windows and Linux
 
 
 See these Reddit threads for more information about Corsair K70 USB protocol decoding:
@@ -37,3 +37,13 @@ Compiling
 ---------
 
 I made the project in Code::Blocks and included my .cbp project file.  In Linux you just need to install the requisite dependencies from your package manager and it should work.  In Windows, download the libraries and extract to C:\libraries\, you may need to edit the paths in the Code::Blocks project to reflect the names of your libraries directory if you're building with different versions of the libraries than I used.
+
+I made some changes to this to get it working on my system. USB detach kernel driver is uncommented. The product id has been changed to work with the k65. The top keys (volume etc) now work well with the wave animation. Also, I have added the following settings variables:
+
+Speed: Change the speed of animation
+red_min_bright: minimum brightness of red
+red_max_bright: maximum brightness of red
+(same for green and blue)
+arrows: light arrows white
+wasd: light wasd white
+moba: enable moba mode which helps for playing dota 2
